@@ -32,9 +32,11 @@ import java.util.List;
 
 /* TODO enter group information
  *
- * EiCB group number: ...
+ * EiCB group number: 57
  * Names and matriculation numbers of all group members:
- * ...
+ * Stefan Nikolaus Dobrea MatrNr. : 2802837
+ * Franck Boudouin Tameze MatrNr. : 2682002
+ * Narges Ahmadi Asl MatNr. : 2732428
  */
 
 public class CodeGenerator extends AstNodeBaseVisitor<Instruction, Void> {
@@ -116,76 +118,178 @@ public class CodeGenerator extends AstNodeBaseVisitor<Instruction, Void> {
 	@Override
 	public Instruction visitVariableAssignment(VariableAssignment variableAssignment, Void __) {
 		// TODO implement (task 3.4)
-		throw new UnsupportedOperationException();
+		visit(variableAssignment.value);
+		visit(variableAssignment.identifier);
+		assembler.storeToStackAddress(variableAssignment.value.getType().wordSize);
+		return null;
 	}
 	
 	@Override
 	public Instruction visitLeftHandIdentifier(LeftHandIdentifier leftHandIdentifier, Void __) {
 		// TODO implement (task 3.4)
-		throw new UnsupportedOperationException();
+		int baseOffset = leftHandIdentifier.getDeclaration().getLocalBaseOffset();
+		assembler.loadAddress(Register.LB, baseOffset);
+		return null;
 	}
 	
 	@Override
 	public Instruction visitMatrixLhsIdentifier(MatrixLhsIdentifier matrixLhsIdentifier, Void __) {
 		// TODO implement (task 3.4)
-		throw new UnsupportedOperationException();
+		final MatrixType type = (MatrixType) matrixLhsIdentifier.getDeclaration().getType();
+
+		visitLeftHandIdentifier(matrixLhsIdentifier, __);
+
+		visit(matrixLhsIdentifier.rowIndexExpression);
+
+		assembler.emitBoundsCheck(0, type.rows);
+
+		assembler.loadIntegerValue(type.cols);
+		assembler.emitIntegerMultiplication();
+		assembler.emitIntegerAddition();
+
+		visit(matrixLhsIdentifier.colIndexExpression);
+
+		assembler.emitBoundsCheck(0, type.cols);
+		assembler.emitIntegerAddition();
+		return null;
 	}
 	
 	@Override
 	public Instruction visitVectorLhsIdentifier(VectorLhsIdentifier vectorLhsIdentifier, Void __) {
 		// TODO implement (task 3.4)
-		throw new UnsupportedOperationException();
+		final VectorType typ = (VectorType) vectorLhsIdentifier.getDeclaration().getType();
+
+		visitLeftHandIdentifier(vectorLhsIdentifier, __);
+
+		visit(vectorLhsIdentifier.indexExpression);
+
+		assembler.emitBoundsCheck(0, typ.dimension);
+		assembler.emitIntegerAddition();
+		return null;
 	}
 	
 	@Override
 	public Instruction visitRecordLhsIdentifier(RecordLhsIdentifier recordLhsIdentifier, Void __) {
 		// TODO implement (task 3.4)
-		throw new UnsupportedOperationException();
+		final Declaration declaration = recordLhsIdentifier.getDeclaration();
+		final RecordType type = (RecordType) declaration.getType();
+		final int baseOffset = declaration.getLocalBaseOffset();
+
+
+		int offset = 0;
+		for (final RecordElementDeclaration element : type.typeDeclaration.elements) {
+			if (element.name.equals(recordLhsIdentifier.elementName)) {
+				break;
+			}
+			offset += element.getType().wordSize;
+		}
+
+		assembler.loadAddress(Register.LB, baseOffset + offset);
+		return null;
 	}
 	
 	@Override
 	public Instruction visitForLoop(ForLoop forLoop, Void __) {
 		int initVarOffset = forLoop.getInitVarDeclaration().getLocalBaseOffset();
 		int incrVarOffset = forLoop.getIncrVarDeclaration().getLocalBaseOffset();
-		
+
 		// evaluate init expression and store to the init variable
 		visit(forLoop.initExpression);
 		// ..., initValue
 		assembler.storeLocalValue(forLoop.initExpression.getType().wordSize, initVarOffset);
 		// ...
-		
+
 		// jump to the loop condition (this jump needs to backpatched later on)
 		Instruction jumpToCondition = assembler.emitJump(-1);
 		int loopBodyStart = assembler.getNextInstructionAddress();
-		
+
 		// emit loop body
 		int nextOffset = assembler.getNextOffset();
 		visit(forLoop.body);
 		assembler.resetNextOffset(nextOffset);
-		
+
 		// evaluate increment expression and store it to the increment variable
 		visit(forLoop.incrExpression);
 		// ..., incrValue
 		assembler.storeLocalValue(forLoop.incrExpression.getType().wordSize, incrVarOffset);
 		// ...
-		
+
 		// backpatch the jump to the test
 		int loopCondition = assembler.getNextInstructionAddress();
 		assembler.backPatchJump(jumpToCondition, loopCondition);
-		
+
 		// evaluate the loop condition
 		visit(forLoop.loopCondition);
 		// ..., bool
 		assembler.emitConditionalJump(true, loopBodyStart);
 		// ...
-		
+
 		return null;
 	}
 	
 	@Override
 	public Instruction visitForEachLoop(ForEachLoop forEachLoop, Void __) {
 		// TODO implement (task 3.5)
-		throw new UnsupportedOperationException();
+		int localSize = assembler.getNextOffset();
+
+		Expression structExpression = forEachLoop.structExpression;
+		IteratorDeclaration iterator = forEachLoop.iteratorDeclaration;
+		int elementCount = structExpression.getType().wordSize;
+
+		int structBase = 0;
+		boolean popStructExpression = false;
+		if (structExpression instanceof IdentifierReference) {
+			structBase = ((IdentifierReference) structExpression).getDeclaration().getLocalBaseOffset();
+		} else {
+			popStructExpression = true;
+			structBase = assembler.getNextOffset();
+			visit(structExpression);
+			assembler.setNextOffset(assembler.getNextOffset() + elementCount);
+		}
+
+
+		assembler.loadIntegerValue(0);
+		assembler.setNextOffset(assembler.getNextOffset() + 1);
+		iterator.setLocalBaseOffset(assembler.getNextOffset());
+		assembler.setNextOffset(assembler.getNextOffset() + 1);
+
+		int loopCondition = assembler.getNextInstructionAddress();
+		assembler.loadValue(Register.ST, 1, -1);
+		assembler.loadIntegerValue(elementCount);
+		assembler.emitIntegerComparison(Comparison.LESS);
+		Instruction jumpToLoopEnd = assembler.emitConditionalJump(false, -1);
+
+		{
+
+			assembler.loadValue(Register.ST, 1, -1);
+			assembler.loadAddress(Register.LB, structBase);
+			assembler.emitIntegerAddition();
+			assembler.loadFromStackAddress(1);
+
+			int nextOffset = assembler.getNextOffset();
+			visit(forEachLoop.body);
+			assembler.resetNextOffset(nextOffset);
+
+			if (iterator.isVariable()) {
+				assembler.loadValue(Register.ST, 1, -2);
+				assembler.loadAddress(Register.LB, structBase);
+				assembler.emitIntegerAddition();
+				assembler.storeToStackAddress(1);
+			} else {
+				assembler.emitPop(0, 1);
+			}
+			assembler.emitIncrement();
+		}
+		assembler.emitJump(loopCondition);
+
+		int loopEnd = assembler.getNextInstructionAddress();
+		assembler.backPatchJump(jumpToLoopEnd, loopEnd);
+		if (popStructExpression)
+			assembler.emitPop(0, elementCount + 1);
+		else
+			assembler.emitPop(0, 1);
+		assembler.setNextOffset(localSize);
+		return null;
 	}
 	
 	@Override
@@ -245,7 +349,12 @@ public class CodeGenerator extends AstNodeBaseVisitor<Instruction, Void> {
 	@Override
 	public Instruction visitCompoundStatement(CompoundStatement compoundStatement, Void __) {
 		// TODO implement (task 3.3)
-		throw new UnsupportedOperationException();
+		int size = assembler.getNextOffset();
+		for (Statement statement : compoundStatement.statements) {
+			visit(statement);
+		}
+		assembler.resetNextOffset(size);
+		return null;
 	}
 	
 	@Override
@@ -263,7 +372,7 @@ public class CodeGenerator extends AstNodeBaseVisitor<Instruction, Void> {
 		
 		for(Case namedCase : switchCaseStatement.cases) {
 			// place switch condition on the stack
-			assembler.loadAddress(Register.LB, localSize);
+			assembler.loadIntegerValue(localSize);
 			assembler.loadFromStackAddress(1);
 			// save jump to backpatch later
 			jumps.add(visit(namedCase));
@@ -319,7 +428,27 @@ public class CodeGenerator extends AstNodeBaseVisitor<Instruction, Void> {
 	@Override
 	public Instruction visitMatrixMultiplication(MatrixMultiplication matrixMultiplication, Void __) {
 		// TODO implement (task 3.2)
-		throw new UnsupportedOperationException();
+
+		visit(matrixMultiplication.leftOperand);
+		visit(matrixMultiplication.rightOperand);
+
+		StructType leftOperandTypeType = (StructType) matrixMultiplication.leftOperand.getType();
+		StructType rightOperandTypeType = (StructType) matrixMultiplication.rightOperand.getType();
+
+		if (!(leftOperandTypeType instanceof MatrixType lMat) || !(rightOperandTypeType instanceof MatrixType rMat))
+			throw new InternalCompilerError("Matrix multiplication involving vectors is no longer supported");
+
+        assembler.loadIntegerValue(lMat.rows);
+		assembler.loadIntegerValue(lMat.cols);
+		assembler.loadIntegerValue(rMat.cols);
+
+		if (leftOperandTypeType.elementType.equals(IntType.instance))
+			assembler.emitIntegerMatrixMultiplication();
+		else
+			assembler.emitFloatMatrixMultiplication();
+
+		return null;
+
 	}
 	
 	@Override
@@ -539,7 +668,8 @@ public class CodeGenerator extends AstNodeBaseVisitor<Instruction, Void> {
 	@Override
 	public Instruction visitSubtraction(Subtraction subtraction, Void __) {
 		// TODO implement (task 3.1)
-		throw new UnsupportedOperationException();
+		visitArithmeticOperator(subtraction, false, false, true, Primitive.subI, Primitive.subF);
+		return null;
 	}
 	
 	@Override
@@ -563,7 +693,13 @@ public class CodeGenerator extends AstNodeBaseVisitor<Instruction, Void> {
 	@Override
 	public Instruction visitCompare(Compare compare, Void __) {
 		// TODO implement (task 3.1)
-		throw new UnsupportedOperationException();
+		visit(compare.leftOperand);
+		visit(compare.rightOperand);
+		if (compare.leftOperand.getType().equals(IntType.instance))
+			assembler.emitIntegerComparison(compare.comparator);
+		else
+			assembler.emitFloatComparison(compare.comparator);
+		return null;
 	}
 	
 	@Override
@@ -636,19 +772,46 @@ public class CodeGenerator extends AstNodeBaseVisitor<Instruction, Void> {
 	@Override
 	public Instruction visitCallExpression(CallExpression callExpression, Void __) {
 		// TODO implement (task 3.1)
-		throw new UnsupportedOperationException();
+		for (Expression expression : callExpression.actualParameters) {
+			visit(expression);
+		}
+		assembler.emitFunctionCall(callExpression.getCalleeDefinition());
+		return null;
 	}
 	
 	@Override
 	public Instruction visitElementSelect(ElementSelect elementSelect, Void __) {
 		// TODO implement (task 3.7)
-		throw new UnsupportedOperationException();
+		StructType typ = (StructType) elementSelect.structExpression.getType();
+		Type resultType = elementSelect.getType();
+
+		visit(elementSelect.structExpression);
+		assembler.loadAddress(Register.ST, -typ.wordSize);
+		visit(elementSelect.indexExpression);
+		assembler.emitBoundsCheck(0, (typ.wordSize / resultType.wordSize));
+		if (resultType.wordSize != 1) {
+			assembler.loadIntegerValue(resultType.wordSize);
+			assembler.emitIntegerMultiplication();
+		}
+		assembler.emitIntegerAddition();
+		assembler.loadFromStackAddress(resultType.wordSize);
+		assembler.emitPop(resultType.wordSize, typ.wordSize);
+		return null;
 	}
 	
 	@Override
 	public Instruction visitRecordElementSelect(RecordElementSelect recordElementSelect, Void __) {
 		// TODO implement (task 3.6)
-		throw new UnsupportedOperationException();
+		 Type elementType = recordElementSelect.getType();
+		 RecordType recordType = (RecordType) recordElementSelect.recordExpression.getType();
+		 int offset = recordType.typeDeclaration.getElementOffset(recordElementSelect.elementName);
+
+		visit(recordElementSelect.recordExpression);
+		assembler.loadAddress(Register.ST, -recordType.wordSize + offset);
+		assembler.loadFromStackAddress(elementType.wordSize);
+		assembler.emitPop(elementType.wordSize, recordType.wordSize);
+		return null;
+
 	}
 	
 	@Override
@@ -795,9 +958,10 @@ public class CodeGenerator extends AstNodeBaseVisitor<Instruction, Void> {
 	@Override
 	public Instruction visitIntValue(IntValue intValue, Void __) {
 		// TODO implement (task 3.1)
-		throw new UnsupportedOperationException();
+		assembler.loadIntegerValue(intValue.value);
+
+		return null;
 	}
-	
 	@Override
 	public Instruction visitFloatValue(FloatValue floatValue, Void __) {
 		assembler.loadFloatValue(floatValue.value);
